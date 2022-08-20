@@ -1,0 +1,197 @@
+#!/bin/sh
+
+export POSIXLY_CORRECT=yes
+if [ $(uname) = "Linux" ]; then SEDI="-i"
+else SEDI="-i ''"; fi
+#Kontrola validnosti data
+isdate(){
+if ! echo "$1" | egrep -q '^([0-9]{4}-(((0[13578]|1[02])-(0[1-9]|[12][0-9]|3[01]))|(0[2469]|11)-(0[1-9]|[12][0-9]|30)))$'; then
+    echo "Neplatny format data">&2
+    exit 1
+else
+    year=$(echo "$1" | sed 's/-.*//')
+    month=$(echo "$1" | sed 's/-[^-]*$//' | sed 's/.*-//')
+    day=$(echo "$1" | sed 's/.*-//')
+    if [ $month = 02 -a $day = 30 ] || [ $year = 0000 ]; then
+        echo "Neplatny format data">&2
+        exit 1
+    elif [ $day = 29 -a $month = 02 ] && [ `echo "$year % 4" | bc` -ne 0 ]; then
+        echo "Neplatny format data">&2
+        exit 1
+    elif [ $day = 29 -a $month = 02 ] && [ `echo "$year % 100" | bc` -eq 0 -a `echo "$year % 400" | bc` -ne 0 ]; then
+        echo "Neplatny format data">&2
+        exit 1
+    fi
+fi
+}
+#Zapis a uprava logu
+zapis(){
+    if [ $(grep -c "$SOUBOR" "$WEDI_RC") = 0 ]; then
+        old="} L{1} {P} $CESTA/[^/]*$"
+        line=$(grep -n "$old" "$WEDI_RC" | awk -F  ":" '{print $1}')
+
+        grep "$old" "$WEDI_RC" | sed s/"} L{1} {P} "/"} L{0} {P} "/>>"$WEDI_RC"
+        if [ $line ]; then sed $SEDI "${line}d" "$WEDI_RC"; fi
+        echo "(O){$(date +%Y-%m-%d)} : (N){$(date +%Y-%m-%d)} C{1} L{1} {P} $SOUBOR">>"$WEDI_RC"
+    else #uprava existujiciho logu
+        line=$(grep -n "$SOUBOR" "$WEDI_RC" | awk -F  ":" '{print $1}')
+        grep "$SOUBOR" "$WEDI_RC" | sed s/"(N){[^ ]*}"/"(N){$(date +%Y-%m-%d)}"/>>"$WEDI_RC"
+        sed $SEDI "${line}d" "$WEDI_RC"
+        
+        old="} L{1} {P} $CESTA/[^/]*$"
+        line=$(grep -n "$old" "$WEDI_RC" | awk -F  ":" '{print $1}')
+        grep "$old" "$WEDI_RC" | sed s/"} L{1} {P} "/"} L{0} {P} "/>>"$WEDI_RC"
+        sed $SEDI "${line}d" "$WEDI_RC"
+        
+        new="} L{0} {P} $SOUBOR"
+        line=$(grep -n "$new" "$WEDI_RC" | awk -F  ":" '{print $1}')
+        grep "$SOUBOR" "$WEDI_RC" | sed s/"} L{0} {P} "/"} L{1} {P} "/>>"$WEDI_RC"
+        sed $SEDI "${line}d" "$WEDI_RC"
+
+        COUNT=$(grep "$SOUBOR" "$WEDI_RC" | sed 's/[^C]*C{//' | sed 's/}.*//')
+        COUNT=$(expr $COUNT + 1)
+        grep "$SOUBOR" "$WEDI_RC" | sed s/"} C{[0-9]*} L{"/"} C{$COUNT} L{"/>>"$WEDI_RC"
+        line=$(grep -n "$SOUBOR" "$WEDI_RC" | awk -F  ":" '{print $1}')
+        line=$(echo $line | awk -F " " '{{print $1}}')
+        sed $SEDI "${line}d" "$WEDI_RC"
+    fi
+    $EDIT "$SOUBOR"
+}
+
+#Hledani nejcasteji upravovaneho souboru ve slozce
+MOST=0
+mostly(){
+    while read line; do
+        folder=$(echo "$line" | sed 's/[^/]*//')
+        if [ "$1" = "$(dirname $folder)" ]; then
+            COUNT=$(echo $line | sed 's/[^C]*C{//' | sed 's/}.*//')
+            if [ $COUNT -gt $MOST ]; then
+                MOST=$COUNT
+                SOUBOR=$folder
+            fi
+        fi
+    done < "$WEDI_RC"
+}
+
+#Vypis souboru upravenych pomoci skritpu v dane slozce
+list(){
+    while read line; do
+        line=$(echo $line | sed 's/[^/]*//')
+        if [ $1 == $(dirname $line) ]; then
+            echo $line
+        fi
+    done < "$WEDI_RC"
+}
+
+#Vypis souboru upravenych pomoci skriptu v dane slozce pred urcitym datem
+before(){
+    while read line; do
+        folder=$(echo "$line" | sed 's/[^/]*//')
+        if [ "$2" = "$(dirname $folder)" ]; then
+            date=$(echo "$line" | sed 's/[^{]*{//' | sed 's/}.*//' | sed 's/-//g')
+            bdate=$(echo $1 | sed 's/-//g')
+            
+            if [ $bdate -gt $date ]; then
+                echo $folder
+            fi
+        fi
+    done < "$WEDI_RC"
+}
+#Vypis souboru upravenych pomoci skriptu v dane slozce po urcitem datu
+after(){
+    while read line; do
+        folder=$(echo "$line" | sed 's/[^/]*//')
+        if [ "$2" = "$(dirname $folder)" ]; then
+            date=$(echo $line | sed 's/[^N]*N){//' | sed 's/}.*//' | sed 's/-//g')
+            adate=$(echo $1 | sed 's/-//g')
+
+            if [ ! $adate -gt $date ]; then
+                echo $folder
+            fi
+        fi
+    done < "$WEDI_RC"
+}
+
+#Kontrola dostupnosti utility realpath
+$(realpath ./) 2> /dev/null
+if [ $? -eq 127 ]; then
+    echo "Realpath is missing!">&2
+fi
+#Nastaveni editoru
+if [ ! -z $EDITOR ]; then EDIT="$EDITOR";
+elif [ ! -z $VISUAL ]; then EDIT="$VISUAL";
+else EDIT=vi; fi
+#Kontrola existence promenne WEDI_RC
+if [ -z "$WEDI_RC" ]; then
+    echo "Neexistuje promenna WEDI_RC">&2
+    exit 1
+else #Vytvareni slozek a souboru ulozenych ve WEDI_RC
+    mkdir -p $(dirname "$WEDI_RC")
+    touch "$WEDI_RC"
+    if [ $? -eq 1 ]; then echo "Soubor $WEDI_RC nelze vytvorit">&2; exit 1; fi
+fi
+#Cesta k aktualnimu adresari
+CESTA=$(realpath .)
+COUNT=0
+#Kontrola stavajici existence souboru
+while read line; do
+    EXIST=$(echo "$line" | sed 's/[^/]*//')
+    COUNT=$(expr $COUNT + 1)
+    if [ ! -f "$EXIST" ]; then
+        LAST=$(echo "$line" | sed 's/[^L]*//' | sed 's/L{//' | sed 's/}.*//')
+        if [ $LAST = 1 ]; then LAST=true; fi
+        
+        sed $SEDI "${COUNT}d" "$WEDI_RC"
+        EXIST=$(dirname $EXIST)
+        
+        if [ $(grep -c "$EXIST/[^/]*$" "$WEDI_RC") -ne 0 ] && [ $LAST = "true" ]; then
+            lin=$(grep -n "$EXIST/[^/]*$" "$WEDI_RC" | awk -F  ":" '{print $1}')
+            lin=$(echo $lin | rev | sed 's/[ ].*//' | rev)
+            for i in `seq 1 $lin`; do
+                read line
+            done < "$WEDI_RC"
+            echo $line | sed 's/} L{0} {P} /} L{1} {P} /'>>"$WEDI_RC"
+            sed $SEDI "${lin}d" "$WEDI_RC"
+        fi
+    fi
+done < "$WEDI_RC"
+
+#Rozhodovani o cinnosti skriptu dle zadanych parametru
+if [ $# = 1 -a -f "$1" ]; then
+    SOUBOR=$(realpath ./$1)
+    CESTA=$(dirname $SOUBOR)
+    zapis
+elif [ $# = 0 -o $# = 1 -a -d "$1" ]; then
+    if [ $# = 1 ]; then CESTA=$(realpath ./$1); fi
+    SOUBOR=$(grep "L{1} {P} $CESTA/[^/]*$" $WEDI_RC | sed 's/[^/]*//')
+    if [ ! "$SOUBOR" ]; then
+        echo "V teto slozce jeste nebylo nic editovano">&2
+        exit 1
+    fi
+    zapis
+elif [ "$1" = "-m" ] && [ $# = 1 -o $# = 2 -a -d "$2" ]; then
+    if [ $# = 2 ]; then CESTA=$(realpath ./$2); fi
+    SOUBOR=$(grep "L{1} {P} $CESTA/[^/]*$" $WEDI_RC | sed 's/[^/]*//')
+    if [ ! "$SOUBOR" ]; then
+        echo "V teto slozce jeste nebylo nic editovano">&2
+        exit 1
+    fi
+    mostly "$CESTA"
+    zapis
+elif [ "$1" = "-l" ] && [ $# = 1 -o $# = 2 -a -d "$2" ]; then
+    if [ $# = 2 ]; then CESTA=$(realpath ./$2); fi
+    list "$CESTA"
+elif [ "$1" = "-a" ] && [ $# = 2 -o $# = 3 -a -d "$3" ]; then
+    if [ $# = 3 ]; then CESTA=$(realpath ./$3); fi
+    isdate "$2"
+    after "$2" "$CESTA"
+elif [ "$1" = "-b" ] && [ $# = 2 -o $# = 3 -a -d "$3" ]; then
+    if [ $# = 3 ]; then CESTA=$(realpath ./$3); fi
+    isdate "$2"
+    before "$2" "$CESTA"
+else
+    echo "Chybne argumenty">&2
+    exit 1
+fi
+
+exit 0
